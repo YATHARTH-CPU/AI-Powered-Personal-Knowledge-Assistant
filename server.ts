@@ -3,17 +3,6 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import * as cheerio from 'cheerio';
 import cors from 'cors';
-import { GoogleGenAI } from "@google/genai";
-
-let aiClient: GoogleGenAI | null = null;
-function getAI() {
-  if (!aiClient) {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error('GEMINI_API_KEY is not defined');
-    aiClient = new GoogleGenAI({ apiKey: key });
-  }
-  return aiClient;
-}
 
 async function startServer() {
   const app = express();
@@ -31,81 +20,20 @@ async function startServer() {
   }
   let vectorStore: Chunk[] = [];
 
-  // --- AI API Proxies ---
-
-  app.post('/api/ai/extract-pdf', async (req, res) => {
-    try {
-      const { base64 } = req.body;
-      const ai = getAI();
-      
-      const result = await (ai as any).models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: "Extract and return the full text content from this PDF. Output ONLY the extracted text, no commentary." },
-              { inlineData: { data: base64, mimeType: "application/pdf" } }
-            ]
-          }
-        ]
-      });
-      
-      res.json({ text: result.text });
-    } catch (e: any) {
-      console.error('PDF Extraction Error:', e);
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/ai/embed', async (req, res) => {
-    try {
-      const { text, batch } = req.body;
-      const ai = getAI();
-      
-      const result = await (ai as any).models.embedContent({
-        model: "gemini-embedding-2-preview",
-        contents: Array.isArray(text) ? text : [text]
-      });
-      
-      if (batch && Array.isArray(text)) {
-        res.json({ embeddings: result.embeddings });
-      } else {
-        res.json({ embedding: result.embeddings[0] });
-      }
-    } catch (e: any) {
-      console.error('Embedding Error:', e);
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  app.post('/api/ai/chat', async (req, res) => {
-    try {
-      const { prompt } = req.body;
-      const ai = getAI();
-      
-      const result = await (ai as any).models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [{ role: 'user', parts: [{ text: prompt }] }]
-      });
-      res.json({ text: result.text });
-    } catch (e: any) {
-      console.error('Chat Error:', e);
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // --- Knowledge Store Routes ---
+  // API Routes
   
+  // Store chunks from frontend
   app.post('/api/store-chunks', (req, res) => {
     const { source, chunks } = req.body;
     if (!source || !chunks) return res.status(400).json({ error: 'Missing data' });
     
+    // Add source property to each chunk if not present
     const normalizedChunks = chunks.map((c: any) => ({ ...c, source }));
     vectorStore.push(...normalizedChunks);
     res.json({ message: 'Success', count: chunks.length });
   });
 
+  // Scrape URL (Backend needed due to CORS)
   app.post('/api/scrape', async (req, res) => {
     try {
       const { url } = req.body;
@@ -122,6 +50,7 @@ async function startServer() {
     }
   });
 
+  // Search vector store
   app.post('/api/search-vector', (req, res) => {
     const { embedding } = req.body;
     if (!embedding) return res.status(400).json({ error: 'Missing embedding' });
@@ -134,6 +63,16 @@ async function startServer() {
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, 5);
 
+    res.json({ results });
+  });
+
+  // Search by keyword (fallback/utility)
+  app.post('/api/search', (req, res) => {
+    const { query } = req.body;
+    const lowerQuery = query.toLowerCase();
+    const results = vectorStore
+      .filter(c => c.text.toLowerCase().includes(lowerQuery) || c.source.toLowerCase().includes(lowerQuery))
+      .slice(0, 5);
     res.json({ results });
   });
 
