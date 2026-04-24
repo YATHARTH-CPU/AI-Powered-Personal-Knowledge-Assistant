@@ -1,0 +1,6 @@
+{
+  "name": "AI-Powered Personal Knowledge Assistant",
+  "description": "An intelligent student knowledge base with PDF indexing, AI-powered semantic search, and document summarization using Gemini RAG.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
