@@ -19,10 +19,6 @@ import {
   ListRestart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from "@google/genai";
-
-// Standard RAG initialization on client for chat
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 interface Message {
   role: 'user' | 'assistant';
@@ -49,9 +45,6 @@ export default function App() {
   const [indexingProgress, setIndexingProgress] = useState(0);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // Initialize Gemini on Frontend
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
   useEffect(() => {
     fetchDocuments();
@@ -88,21 +81,14 @@ export default function App() {
       setIndexingProgress(30);
       setStatusMessage('AI Extracting Text...');
       
-      const extractionResponse = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: 'Extract and return the full text content from this PDF. Output ONLY the extracted text, no commentary.' },
-              { inlineData: { data: base64, mimeType: 'application/pdf' } }
-            ]
-          }
-        ]
+      const extractionRes = await fetch('/api/ai/extract-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64 })
       });
-
-      const text = extractionResponse.text;
-      if (!text) throw new Error('Could not extract text from PDF');
+      const extractionData = await extractionRes.json();
+      const text = extractionData.text;
+      if (!text) throw new Error(extractionData.error || 'Could not extract text');
 
       setIndexingProgress(50);
       setStatusMessage('Chunking Knowledge...');
@@ -111,12 +97,13 @@ export default function App() {
       setIndexingProgress(70);
       setStatusMessage(`Embedding ${chunks.length} segments...`);
       
-      const batchResponse = await ai.models.embedContent({
-        model: 'gemini-embedding-2-preview',
-        contents: chunks
+      const embedRes = await fetch('/api/ai/embed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: chunks, batch: true })
       });
-
-      const embeddings = batchResponse.embeddings || [];
+      const embedData = await embedRes.json();
+      const embeddings = embedData.embeddings || [];
 
       if (embeddings.length === 0) {
         throw new Error('Failed to generate embeddings');
@@ -172,12 +159,13 @@ export default function App() {
 
       setStatusMessage('Embedding...');
       const chunks = chunkText(text, 1200);
-      const batchRes = await ai.models.embedContent({
-        model: 'gemini-embedding-2-preview',
-        contents: chunks
+      const embedRes = await fetch('/api/ai/embed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: chunks, batch: true })
       });
-
-      const embeddings = batchRes.embeddings || [];
+      const embedData = await embedRes.json();
+      const embeddings = embedData.embeddings || [];
 
       await fetch('/api/store-chunks', {
         method: 'POST',
@@ -209,12 +197,13 @@ export default function App() {
     setStatusMessage('Indexing Note...');
     try {
       const chunks = chunkText(noteContent, 1200);
-      const batchRes = await ai.models.embedContent({
-        model: 'gemini-embedding-2-preview',
-        contents: chunks
+      const embedRes = await fetch('/api/ai/embed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: chunks, batch: true })
       });
-
-      const embeddings = batchRes.embeddings || [];
+      const embedData = await embedRes.json();
+      const embeddings = embedData.embeddings || [];
 
       await fetch('/api/store-chunks', {
         method: 'POST',
@@ -261,12 +250,13 @@ export default function App() {
 
     try {
       // 1. Get query embedding
-      const embRes = await ai.models.embedContent({
-        model: 'gemini-embedding-2-preview',
-        contents: [userMsg] // Force plural response by using array
+      const embedRes = await fetch('/api/ai/embed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: [userMsg], batch: true })
       });
-
-      const queryEmbedding = embRes.embeddings?.[0]?.values;
+      const embedData = await embedRes.json();
+      const queryEmbedding = embedData.embeddings?.[0]?.values;
       if (!queryEmbedding) throw new Error('Could not generate query embedding');
 
       // 2. Search for context on backend
@@ -284,7 +274,7 @@ export default function App() {
 
       const foundSources = Array.from(new Set(searchData.results.map((r: any) => r.source))) as string[];
 
-      // 3. Chat with Gemini
+      // 3. Chat with AI
       const prompt = `
         You are a helpful study assistant. 
         Use the following context extracted from uploaded class notes, PDFs, and bookmarks to answer the student's question. 
@@ -297,14 +287,16 @@ export default function App() {
         ${userMsg}
       `;
 
-      const result = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt
+      const chatRes = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
       });
+      const chatData = await chatRes.json();
 
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: result.text || 'Sorry, I couldn\'t generate a response.',
+        content: chatData.text || 'Sorry, I couldn\'t generate a response.',
         source: foundSources
       }]);
     } catch (error) {
@@ -330,14 +322,17 @@ export default function App() {
       
       const fullText = chunks.map((r: any) => r.text).join(' ');
       const prompt = `Provide a concise summary of this document: \n\n ${fullText.slice(0, 5000)}`;
-      const result = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt
+      
+      const chatRes = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
       });
+      const chatData = await chatRes.json();
 
       setMessages(prev => [...prev, { 
         role: 'assistant', 
-        content: `### Summary of ${docSource}\n\n${result.text}`,
+        content: `### Summary of ${docSource}\n\n${chatData.text}`,
         source: [docSource]
       }]);
     } catch (e) {
